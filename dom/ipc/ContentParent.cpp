@@ -40,7 +40,6 @@
 #include "mozilla/docshell/OfflineCacheUpdateParent.h"
 #include "mozilla/dom/DataStoreService.h"
 #include "mozilla/dom/DataTransfer.h"
-#include "mozilla/dom/DOMStorageIPC.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/File.h"
 #include "mozilla/dom/ExternalHelperAppParent.h"
@@ -52,13 +51,13 @@
 #include "mozilla/dom/PFMRadioParent.h"
 #include "mozilla/dom/PMemoryReportRequestParent.h"
 #include "mozilla/dom/asmjscache/AsmJSCache.h"
+#include "mozilla/dom/DOMStorageIPC.h"
 #include "mozilla/dom/bluetooth/PBluetoothParent.h"
 #include "mozilla/dom/cellbroadcast/CellBroadcastParent.h"
 #include "mozilla/dom/devicestorage/DeviceStorageRequestParent.h"
 #include "mozilla/dom/icc/IccParent.h"
 #include "mozilla/dom/mobileconnection/MobileConnectionParent.h"
 #include "mozilla/dom/mobilemessage/SmsParent.h"
-#include "mozilla/dom/power/PowerManagerService.h"
 #include "mozilla/dom/quota/QuotaManager.h"
 #include "mozilla/dom/telephony/TelephonyParent.h"
 #include "mozilla/dom/time/DateCacheCleaner.h"
@@ -109,7 +108,6 @@
 #include "nsIDOMGeoGeolocation.h"
 #include "nsIDOMGeoPositionError.h"
 #include "nsIDragService.h"
-#include "mozilla/dom/WakeLock.h"
 #include "nsIDOMWindow.h"
 #include "nsIExternalProtocolService.h"
 #include "nsIFormProcessor.h"
@@ -158,6 +156,7 @@
 #include "private/pprio.h"
 #include "ContentProcessManager.h"
 #include "mozilla/psm/PSMContentListener.h"
+#include "nsISystemMessagesInternal.h"
 
 #include "nsIBidiKeyboard.h"
 
@@ -243,7 +242,6 @@ using namespace mozilla::dom::cellbroadcast;
 using namespace mozilla::dom::devicestorage;
 using namespace mozilla::dom::icc;
 using namespace mozilla::dom::indexedDB;
-using namespace mozilla::dom::power;
 using namespace mozilla::dom::mobileconnection;
 using namespace mozilla::dom::mobilemessage;
 using namespace mozilla::dom::telephony;
@@ -891,9 +889,15 @@ ContentParent::GetInitialProcessPriority(Element* aFrameElement)
         return PROCESS_PRIORITY_FOREGROUND;
     }
 
-    return browserFrame->GetIsExpectingSystemMessage() ?
-               PROCESS_PRIORITY_FOREGROUND_HIGH :
-               PROCESS_PRIORITY_FOREGROUND;
+    nsAutoString manifestURL;
+    browserFrame->GetAppManifestURL(manifestURL);
+    if (manifestURL.IsEmpty()) {
+        return PROCESS_PRIORITY_FOREGROUND;
+    }
+
+    return IsExpectingSystemMessage(manifestURL) ?
+        PROCESS_PRIORITY_FOREGROUND_HIGH :
+        PROCESS_PRIORITY_FOREGROUND;
 }
 
 #if defined(XP_WIN)
@@ -1284,8 +1288,6 @@ ContentParent::CreateBrowserOrApp(const TabContext& aContext,
         return nullptr;
     }
 
-    parent->AsContentParent()->MaybeTakeCPUWakeLock(aFrameElement);
-
     return TabParent::GetFrom(browser);
 }
 
@@ -1411,89 +1413,6 @@ ContentParent::ForwardKnownInfo()
 
 namespace {
 
-class SystemMessageHandledListener final
-    : public nsITimerCallback
-    , public LinkedListElement<SystemMessageHandledListener>
-{
-public:
-    NS_DECL_ISUPPORTS
-
-    SystemMessageHandledListener() {}
-
-    static void OnSystemMessageHandled()
-    {
-        if (!sListeners) {
-            return;
-        }
-
-        SystemMessageHandledListener* listener = sListeners->popFirst();
-        if (!listener) {
-            return;
-        }
-
-        // Careful: ShutDown() may delete |this|.
-        listener->ShutDown();
-    }
-
-    void Init(WakeLock* aWakeLock)
-    {
-        MOZ_ASSERT(!mWakeLock);
-        MOZ_ASSERT(!mTimer);
-
-        // mTimer keeps a strong reference to |this|.  When this object's
-        // destructor runs, it will remove itself from the LinkedList.
-
-        if (!sListeners) {
-            sListeners = new LinkedList<SystemMessageHandledListener>();
-            ClearOnShutdown(&sListeners);
-        }
-        sListeners->insertBack(this);
-
-        mWakeLock = aWakeLock;
-
-        mTimer = do_CreateInstance("@mozilla.org/timer;1");
-
-        uint32_t timeoutSec =
-            Preferences::GetInt("dom.ipc.systemMessageCPULockTimeoutSec", 30);
-        mTimer->InitWithCallback(this, timeoutSec * 1000,
-                                 nsITimer::TYPE_ONE_SHOT);
-    }
-
-    NS_IMETHOD Notify(nsITimer* aTimer) override
-    {
-        // Careful: ShutDown() may delete |this|.
-        ShutDown();
-        return NS_OK;
-    }
-
-private:
-    ~SystemMessageHandledListener() {}
-
-    static StaticAutoPtr<LinkedList<SystemMessageHandledListener> > sListeners;
-
-    void ShutDown()
-    {
-        nsRefPtr<SystemMessageHandledListener> kungFuDeathGrip = this;
-
-        ErrorResult rv;
-        mWakeLock->Unlock(rv);
-
-        if (mTimer) {
-            mTimer->Cancel();
-            mTimer = nullptr;
-        }
-    }
-
-    nsRefPtr<WakeLock> mWakeLock;
-    nsCOMPtr<nsITimer> mTimer;
-};
-
-StaticAutoPtr<LinkedList<SystemMessageHandledListener> >
-    SystemMessageHandledListener::sListeners;
-
-NS_IMPL_ISUPPORTS(SystemMessageHandledListener,
-                  nsITimerCallback)
-
 #ifdef MOZ_NUWA_PROCESS
 class NuwaFreezeListener : public nsThreadManager::AllThreadsWereIdleListener
 {
@@ -1518,29 +1437,7 @@ private:
 
 } // anonymous namespace
 
-void
-ContentParent::MaybeTakeCPUWakeLock(Element* aFrameElement)
-{
-    // Take the CPU wake lock on behalf of this processs if it's expecting a
-    // system message.  We'll release the CPU lock once the message is
-    // delivered, or after some period of time, which ever comes first.
 
-    nsCOMPtr<nsIMozBrowserFrame> browserFrame =
-        do_QueryInterface(aFrameElement);
-    if (!browserFrame ||
-        !browserFrame->GetIsExpectingSystemMessage()) {
-        return;
-    }
-
-    nsRefPtr<PowerManagerService> pms = PowerManagerService::GetInstance();
-    nsRefPtr<WakeLock> lock =
-        pms->NewWakeLockOnBehalfOfProcess(NS_LITERAL_STRING("cpu"), this);
-
-    // This object's Init() function keeps it alive.
-    nsRefPtr<SystemMessageHandledListener> listener =
-        new SystemMessageHandledListener();
-    listener->Init(lock);
-}
 
 bool
 ContentParent::SetPriorityAndCheckIsAlive(ProcessPriority aPriority)
@@ -2468,6 +2365,29 @@ bool
 ContentParent::IsForApp()
 {
     return !mAppManifestURL.IsEmpty();
+}
+
+/*static*/ bool
+ContentParent::IsExpectingSystemMessage(const nsString& aManifestURL)
+{
+    nsCOMPtr<nsIURI> manifestURI;
+    nsresult rv = NS_NewURI(getter_AddRefs(manifestURI), aManifestURL);
+
+    nsCOMPtr<nsISystemMessagesInternal> systemMessenger =
+        do_GetService("@mozilla.org/system-message-internal;1");
+    bool result;
+    rv = systemMessenger->HasPendingMessage(manifestURI, &result);
+    return (NS_SUCCEEDED(rv) && result);
+}
+
+bool
+ContentParent::IsExpectingSystemMessage()
+{
+    if (!IsForApp()) {
+        return false;
+    }
+    return IsExpectingSystemMessage(mAppManifestURL);
+
 }
 
 #ifdef MOZ_NUWA_PROCESS
@@ -4440,7 +4360,12 @@ ContentParent::SendPBlobConstructor(PBlobParent* aActor,
 bool
 ContentParent::RecvSystemMessageHandled()
 {
-    SystemMessageHandledListener::OnSystemMessageHandled();
+    ProcessPriorityManager::ResetProcessPriority(this);
+
+    if (mSystemMessageTimer) {
+        mSystemMessageTimer->Cancel();
+        mSystemMessageTimer = nullptr;
+    }
     return true;
 }
 

@@ -9,7 +9,7 @@
 
 interface nsITabParent;
 
-[scriptable, builtinclass, uuid(0c0a862c-1a47-43c0-ae9e-d51835e3e1a6)]
+[scriptable, builtinclass, uuid(168dd52d-f3a8-4705-aacb-5ed991599ed1)]
 interface nsIMozBrowserFrame : nsIDOMMozBrowserFrame
 {
   /**
@@ -42,16 +42,6 @@ interface nsIMozBrowserFrame : nsIDOMMozBrowserFrame
    * be in the |widgetPages| specified by the manifest.
    */
   [infallible] readonly attribute boolean reallyIsWidget;
-
-  /**
-   * This corresponds to the expecting-system-message attribute, which tells us
-   * whether we should expect that this frame will receive a system message once
-   * it starts up.
-   *
-   * It's the embedder's job to set this attribute on a frame.  Its presence
-   * might cause us to increase the priority of the frame's process.
-   */
-  [infallible] readonly attribute boolean isExpectingSystemMessage;
 
   /**
    * Gets this frame's app manifest URL or widget manifest URL, if the frame

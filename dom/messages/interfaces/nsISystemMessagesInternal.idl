@@ -10,7 +10,7 @@ interface nsIMessageSender;
 
 // Implemented by the contract id @mozilla.org/system-message-internal;1
 
-[scriptable, uuid(54c8e274-decb-4258-9a24-4ebfcbf3d00a)]
+[scriptable, uuid(01ddef89-f2f0-42e7-8741-5b3fc81ab48e)]
 interface nsISystemMessagesInternal : nsISupports
 {
   /*
@@ -52,6 +52,13 @@ interface nsISystemMessagesInternal : nsISupports
    * @param manifestURI The webapp's manifest URI.
    */
   void refreshCache(in nsIMessageSender childMM, in nsIURI manifestURI);
+
+  /*
+   * Allow any internal user to query if there is any pending message for a webapp.
+   * @param manifestURI The target webapp's manifest URI
+   */
+  bool hasPendingMessage(in nsIURI manifestURI);
+
 };
 
 [scriptable, uuid(002f0e82-91f0-41de-ad43-569a2b9d12df)]

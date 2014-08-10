@@ -351,6 +351,19 @@ SystemMessageInternal.prototype = {
     aChildMM.sendAsyncMessage("SystemMessageCache:RefreshCache", cache);
   },
 
+  hasPendingMessage: function(aManifestURI) {
+    if (!aManifestURI) {
+      throw Cr.NS_ERROR_INVALID_ARG;
+    }
+
+    let manifestURL = aManifestURI.spec;
+
+    return this._pages.some(function(aPage) {
+      return (aPage.manifestURL === manifestURL &&
+              aPage.pendingMessages.length > 0);
+    });
+  },
+
   _findTargetIndex: function(aTargets, aTarget) {
     if (!aTargets || !aTarget) {
       return -1;

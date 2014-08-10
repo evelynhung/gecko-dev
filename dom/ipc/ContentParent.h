@@ -227,6 +227,11 @@ public:
     {
       return mIsForBrowser;
     }
+
+    // Check if any pending system message
+    static bool IsExpectingSystemMessage(const nsString& aManifestURL);
+    bool IsExpectingSystemMessage();
+
 #ifdef MOZ_NUWA_PROCESS
     bool IsNuwaProcess() const;
 #endif
@@ -456,16 +461,14 @@ private:
     // called after the process has been transformed to app or browser.
     void ForwardKnownInfo();
 
-    // If the frame element indicates that the child process is "critical" and
-    // has a pending system message, this function acquires the CPU wake lock on
-    // behalf of the child.  We'll release the lock when the system message is
-    // handled or after a timeout, whichever comes first.
-    void MaybeTakeCPUWakeLock(Element* aFrameElement);
-
     // Set the child process's priority and then check whether the child is
     // still alive.  Returns true if the process is still alive, and false
     // otherwise.  If you pass a FOREGROUND* priority here, it's (hopefully)
     // unlikely that the process will be killed after this point.
+    // If the process is used by an app with pending system messages,
+    // it will be given a high priority when we do GetInitialProcessPriority().
+    // So we register a timer for cancelling its high priority status
+    // in case we didn't get system-messages-received ack.
     bool SetPriorityAndCheckIsAlive(hal::ProcessPriority aPriority);
 
     // Transform a pre-allocated app process into a "real" app
@@ -900,6 +903,8 @@ private:
     bool mCreatedPairedMinidumps;
     bool mShutdownPending;
     bool mIPCOpen;
+
+    nsCOMPtr<nsITimer> mSystemMessageTimer;
 
     friend class CrashReporterParent;
 
