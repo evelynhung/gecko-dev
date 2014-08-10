@@ -45,7 +45,7 @@
 //
 // (Wow, our logging story is a huge mess.)
 
-// #define ENABLE_LOGGING 1
+#define ENABLE_LOGGING 1
 
 #if defined(ANDROID) && defined(ENABLE_LOGGING)
 #  include <android/log.h>
@@ -164,6 +164,11 @@ public:
   void SetProcessPriority(ContentParent* aContentParent,
                           ProcessPriority aPriority,
                           uint32_t aLRU = 0);
+
+  /**
+   * This function implements ProcessPriorityManager::ResetProcessPriority.
+   */
+  void ResetProcessPriority(ContentParent* aContentParent);
 
   /**
    * If a magic testing-only pref is set, notify the observer service on the
@@ -306,7 +311,6 @@ public:
   const nsAutoCString& NameWithComma();
 
   bool HasAppType(const char* aAppType);
-  bool IsExpectingSystemMessage();
 
   void OnAudioChannelProcessChanged(nsISupports* aSubject);
   void OnRemoteBrowserFrameShown(nsISupports* aSubject);
@@ -511,6 +515,15 @@ ProcessPriorityManagerImpl::SetProcessPriority(ContentParent* aContentParent,
   if (pppm) {
     pppm->SetPriorityNow(aPriority, aLRU);
   }
+}
+
+void
+ProcessPriorityManagerImpl::ResetProcessPriority(ContentParent* aContentParent)
+{
+  MOZ_ASSERT(aContentParent);
+  nsRefPtr<ParticularProcessPriorityManager> pppm =
+    GetParticularProcessPriorityManager(aContentParent);
+  pppm->ResetPriorityNow();
 }
 
 void
@@ -986,26 +999,6 @@ ParticularProcessPriorityManager::HasAppType(const char* aAppType)
   return false;
 }
 
-bool
-ParticularProcessPriorityManager::IsExpectingSystemMessage()
-{
-  const InfallibleTArray<PBrowserParent*>& browsers =
-    mContentParent->ManagedPBrowserParent();
-  for (uint32_t i = 0; i < browsers.Length(); i++) {
-    TabParent* tp = TabParent::GetFrom(browsers[i]);
-    nsCOMPtr<nsIMozBrowserFrame> bf = do_QueryInterface(tp->GetOwnerElement());
-    if (!bf) {
-      continue;
-    }
-
-    if (bf->GetIsExpectingSystemMessage()) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
 ProcessPriority
 ParticularProcessPriorityManager::CurrentPriority()
 {
@@ -1015,7 +1008,8 @@ ParticularProcessPriorityManager::CurrentPriority()
 ProcessPriority
 ParticularProcessPriorityManager::ComputePriority()
 {
-  if ((mHoldsCPUWakeLock || mHoldsHighPriorityWakeLock) &&
+  bool isExpectingSystemMessage = mContentParent->IsExpectingSystemMessage();
+  if ((isExpectingSystemMessage || mHoldsCPUWakeLock || mHoldsHighPriorityWakeLock) &&
       HasAppType("critical")) {
     return PROCESS_PRIORITY_FOREGROUND_HIGH;
   }
@@ -1036,8 +1030,7 @@ ParticularProcessPriorityManager::ComputePriority()
       PROCESS_PRIORITY_FOREGROUND;
   }
 
-  if ((mHoldsCPUWakeLock || mHoldsHighPriorityWakeLock) &&
-      IsExpectingSystemMessage()) {
+  if (isExpectingSystemMessage || mHoldsCPUWakeLock || mHoldsHighPriorityWakeLock) {
     return PROCESS_PRIORITY_BACKGROUND_PERCEIVABLE;
   }
 
@@ -1054,6 +1047,7 @@ void
 ParticularProcessPriorityManager::SetPriorityNow(ProcessPriority aPriority,
                                                  uint32_t aLRU)
 {
+  LOGP("///// Going to set priority to %s.", ProcessPriorityToString(aPriority));
   if (aPriority == PROCESS_PRIORITY_UNKNOWN) {
     MOZ_ASSERT(false);
     return;
@@ -1393,6 +1387,18 @@ ProcessPriorityManager::SetProcessPriority(ContentParent* aContentParent,
     ProcessPriorityManagerImpl::GetSingleton();
   if (singleton) {
     singleton->SetProcessPriority(aContentParent, aPriority);
+  }
+}
+
+/* static */ void
+ProcessPriorityManager::ResetProcessPriority(ContentParent* aContentParent)
+{
+  MOZ_ASSERT(aContentParent);
+
+  ProcessPriorityManagerImpl* singleton =
+    ProcessPriorityManagerImpl::GetSingleton();
+  if (singleton) {
+    singleton->ResetProcessPriority(aContentParent);
   }
 }
 

@@ -26,7 +26,6 @@ SystemMessageGlue.prototype = {
                     target: aTarget,
                     showApp: aShowApp,
                     onlyShowApp: aOnlyShowApp,
-                    expectingSystemMessage: true,
                     extra: aExtra };
 
     // |SystemAppProxy| will queue "open-app" events for non-activity system
