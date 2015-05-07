@@ -1,0 +1,221 @@
+<!DOCTYPE HTML>
+<html>
+<!--
+Test that frames with pending system message gets elevated process priority.
+-->
+<head>
+  <script type="application/javascript" src="/tests/SimpleTest/SimpleTest.js"></script>
+  <script type="application/javascript" src="../browserElementTestHelpers.js"></script>
+  <link rel="stylesheet" type="text/css" href="/tests/SimpleTest/test.css"/>
+</head>
+<body>
+
+<script type="application/javascript;version=1.7">
+"use strict";
+
+SimpleTest.waitForExplicitFinish();
+browserElementTestHelpers.setEnabledPref(true);
+browserElementTestHelpers.addPermission();
+browserElementTestHelpers.enableProcessPriorityManager();
+
+var gHostedManifestURL = 'http://mochi.test:8888/tests/dom/browser-element/mochitest/priority/file_SystemMessage.webapp';
+var gHostedPageURL = 'http://mochi.test:8888/tests/dom/browser-element/mochitest/priority/file_SystemMessage.html';
+var gApp;
+
+const priorityChangeGracePeriod = 100;
+
+addEventListener('testready', function() {
+  function cbError() {
+    ok(false, "Error callback invoked");
+    SimpleTest.finish();
+  }
+
+  function installApp() {
+    var request = navigator.mozApps.install(gHostedManifestURL);
+    request.onerror = cbError;
+    request.onsuccess = function() {
+      gApp = request.result;
+      runTest();
+    }
+  }
+
+  function uninstallApp() {
+    // Uninstall the app.
+    var request = navigator.mozApps.mgmt.uninstall(gApp);
+    request.onerror = cbError;
+    request.onsuccess = function() {
+      // All done.
+      info("All done");
+      runTest();
+    }
+  }
+
+  function testApp() {
+
+    var iframe = document.createElement('iframe');
+    iframe.setAttribute('mozbrowser', true);
+    iframe.setAttribute('mozapp', gApp.manifestURL);
+    iframe.setAttribute('mozapptype', 'critical');
+    iframe.setAttribute('src', gApp.manifest.launch_path);
+
+    // We expect the following to happen:
+    //
+    // - Process is created.
+    // - Its priority is set to FOREGROUND (when the process starts).
+    // - wait_alert('step0', FOREGROUND_HIGH)
+    // - wait_alert('step1', FOREGROUND)
+    // - wait_alert('step2', FOREGROUND_HIGH)
+    //
+    // Where wait_alert(M, P) means that we expect the subprocess to
+    //   * do alert(M) and
+    //   * be set to priority P
+    // in some order.  If the alert occurs before the priority change, we block
+    // the alert until we observe the priority change.  So the subprocess only
+    // has to do
+    //
+    //   // set priority to FOREGROUND_HIGH
+    //   alert('step0');
+    //   // set priority to FOREGROUND
+    //   alert('step1');
+    //
+    // etc.
+
+    var childID = null;
+    var alertTimes = [];
+
+    // Return a promise that's resolved once the child process calls alert() and
+    // we get a priority change, in some order.
+    //
+    // We check that the text of the alert is |"step" + index|.
+    //
+    // If gracePeriod is given, we check that the priority change occurred at
+    // least gracePeriod ms since the alert from the previous step (with a fudge
+    // factor to account for inaccurate timers).
+    function expectAlertAndPriorityChange(index, priority, /* optional */ gracePeriod) {
+      function checkAlertInfo(e) {
+        info("check AlertInfo " + e.detail.message + " " + index);
+        is(e.detail.message, 'step' + index, 'alert() number ' + index);
+        alertTimes.push(new Date());
+
+        // Block the alert; we'll unblock it by calling e.detail.unblock() later.
+        e.preventDefault();
+        return Promise.resolve(e.detail.unblock);
+      }
+
+      function checkGracePeriod() {
+        info("check GracePeriod " + gracePeriod);
+        if (gracePeriod) {
+          var msSinceLastAlert = (new Date()) - alertTimes[index - 1];
+
+          // 50ms fudge factor.  This test is set up so that, if nsITimers are
+          // accurate, we don't need any fudge factor.  Unfortunately our timers
+          // are not accurate!  There's little we can do here except fudge.
+          // Thankfully all we're trying to test is that we get /some/ delay; the
+          // exact amount of delay isn't so important.
+          ok(msSinceLastAlert + 50 >= gracePeriod,
+             msSinceLastAlert + "ms since last alert >= (" + gracePeriod + " - 50ms)");
+        }
+      }
+
+      return Promise.all(
+        [expectMozbrowserEvent(iframe, 'showmodalprompt').then(checkAlertInfo),
+         expectPriorityChange(childID, priority).then(checkGracePeriod)]
+      ).then(function(results) {
+        // checkAlertInfo returns the function to call to unblock the alert.
+        // It comes to us as the first element of the results array.
+        results[0]();
+      });
+    }
+
+    expectProcessCreated('FOREGROUND_HIGH').then(function(chid) {
+      childID = chid;
+      info('process created with childID ' + childID);
+    }).then(function() {
+      info('waiting page loaded...');
+      return expectMozbrowserEvent(iframe, 'loadend');
+    }).then(function() {
+      info('message handler set, waiting system message...');
+//      var systemMessenger = SpecialPowers.Cc["@mozilla.org/system-message-internal;1"]
+//                            .getService(SpecialPowers.Ci.nsISystemMessagesInternal);
+//      systemMessenger.broadcastMessage("request-sync", {step: 0});
+      return expectAlertAndPriorityChange(0, 'FOREGROUND');
+    }).then(function() {
+      info('message handled');
+      //return expectPriorityChange(childID, 'FOREGROUND');
+    }).then(SimpleTest.finish);
+
+    document.body.appendChild(iframe);
+  }
+
+  var tests = [
+    // Permissions
+    function() {
+      SpecialPowers.pushPermissions(
+        [{ "type": "browser", "allow": 1, "context": document },
+         { "type": "embed-apps", "allow": 1, "context": document },
+         { "type": "webapps-manage", "allow": 1, "context": document }], runTest);
+    },
+
+    // Preferences.
+    function() {
+      SpecialPowers.pushPrefEnv({"set": [["dom.datastore.enabled", true],
+                                         ["dom.datastore.sysMsgOnChangeShortTimeoutSec", 1],
+                                         ["dom.datastore.sysMsgOnChangeLongTimeoutSec", 3],
+                                         ["dom.sysmsg.enabled", true],
+                                         ["dom.testing.ignore_ipc_principal", true],
+                                         ["dom.testing.datastore_enabled_for_hosted_apps", true],
+                                         ["dom.mozBrowserFramesEnabled", true]]}, runTest);
+    },
+
+    function() {
+      SpecialPowers.setAllAppsLaunchable(true);
+      // No confirmation needed when an app is installed.
+      SpecialPowers.autoConfirmAppInstall(() => {
+        SpecialPowers.autoConfirmAppUninstall(runTest);
+      });
+    },
+
+    function() {
+      if (SpecialPowers.isMainProcess()) {
+        info('main process.');
+        SpecialPowers.Cu.import("resource://gre/modules/DataStoreChangeNotifier.jsm");
+        SpecialPowers.Cu.import("resource://gre/modules/Services.jsm");
+        var ioService = SpecialPowers.Cc["@mozilla.org/network/io-service;1"]
+                                     .getService(SpecialPowers.Ci.nsIIOService);
+        var systemMessenger = SpecialPowers.Cc["@mozilla.org/system-message-internal;1"]
+                              .getService(SpecialPowers.Ci.nsISystemMessagesInternal);
+        systemMessenger.registerPage("request-sync",
+                                     ioService.newURI(gHostedPageURL, null, null),
+                                     ioService.newURI(gHostedManifestURL, null, null));
+        systemMessenger.broadcastMessage("request-sync", {step: 0});
+      }
+      runTest();
+    },
+
+    // Installing the app.
+    installApp,
+
+    // Run tests in app.
+    testApp,
+
+    // Uninstall the app.
+    uninstallApp
+  ];
+
+  function runTest() {
+    if (!tests.length) {
+      SimpleTest.finish();
+      return;
+    }
+
+    var test = tests.shift();
+    test();
+  }
+
+  runTest();
+
+});
+
+</script>
+</body>
+</html>
