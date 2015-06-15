@@ -65,8 +65,8 @@ function runTest() {
   // If gracePeriod is given, we check that the priority change occurred at
   // least gracePeriod ms since the alert from the previous step (with a fudge
   // factor to account for inaccurate timers).
-  function expectAlertAndPriorityChange(index, priority, /* optional */ gracePeriod) {
-    function checkAlertInfo(e) {
+  // function expectAlertAndPriorityChange(index, priority, /* optional */ gracePeriod) {
+  /*  function checkAlertInfo(e) {
       is(e.detail.message, 'step' + index, 'alert() number ' + index);
       alertTimes.push(new Date());
 
@@ -102,18 +102,18 @@ function runTest() {
       // It comes to us as the first element of the results array.
       results[0]();
     });
-  }
+  }*/
 
   expectProcessCreated('FOREGROUND').then(function(chid) {
     childID = chid;
   }).then(function() {
-    return expectAlertAndPriorityChange(0, 'FOREGROUND_HIGH');
+    return expectAlertAndPriorityChange(childID, iframe, 0, 'FOREGROUND_HIGH');
   }).then(function() {
-    return expectAlertAndPriorityChange(1, 'FOREGROUND', priorityChangeGracePeriod);
+    return expectAlertAndPriorityChange(childID, iframe, 1, 'FOREGROUND', priorityChangeGracePeriod, alertTimes);
   }).then(function() {
-    return expectAlertAndPriorityChange(2, 'FOREGROUND_HIGH');
+    return expectAlertAndPriorityChange(childID, iframe, 2, 'FOREGROUND_HIGH');
   }).then(function() {
-    return expectAlertAndPriorityChange(3, 'FOREGROUND', priorityChangeGracePeriod);
+    return expectAlertAndPriorityChange(childID, iframe, 3, 'FOREGROUND', priorityChangeGracePeriod);
   }).then(SimpleTest.finish);
 
   document.body.appendChild(iframe);

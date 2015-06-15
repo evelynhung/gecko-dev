@@ -243,6 +243,56 @@ function expectMozbrowserEvent(iframe, eventName) {
   });
 }
 
+// Return a promise that's resolved once the child process calls alert() and
+// we get a priority change, in some order.
+//
+// We check that the text of the alert is |"step" + index|.
+//
+// If gracePeriod is given, we check that the priority change occurred at
+// least gracePeriod ms since the alert from the previous step (with a fudge
+// factor to account for inaccurate timers).
+function expectAlertAndPriorityChange(childID, iframe, index, priority,
+                    /* optional */ gracePeriod, /* optional */ alertTimes) {
+  function checkAlertInfo(e) {
+    is(e.detail.message, 'step' + index, 'alert() number ' + index);
+    if (alertTimes) {
+      alertTimes.push(new Date());
+    }
+    // Block the alert; we'll unblock it by calling e.detail.unblock() later.
+    e.preventDefault();
+    return Promise.resolve(e.detail.unblock);
+  }
+
+  function checkGracePeriod() {
+    if (gracePeriod && alertTimes) {
+      var msSinceLastAlert = (new Date()) - alertTimes[index - 1];
+
+      // 50ms fudge factor.  This test is set up so that, if nsITimers are
+      // accurate, we don't need any fudge factor.  Unfortunately our timers
+      // are not accurate!  There's little we can do here except fudge.
+      // Thankfully all we're trying to test is that we get /some/ delay; the
+      // exact amount of delay isn't so important.
+      ok(msSinceLastAlert + 50 >= gracePeriod,
+         msSinceLastAlert + "ms since last alert >= (" + gracePeriod + " - 50ms)");
+    }
+  }
+
+  return Promise.all([
+    new Promise(function(resolve, reject) {
+      iframe.addEventListener('mozbrowsershowmodalprompt', function check(e) {
+        iframe.removeEventListener('mozbrowsershowmodalprompt', check);
+        resolve(checkAlertInfo(e));
+      });
+    }),
+    expectPriorityChange(childID, priority).then(checkGracePeriod)
+  ]).then(function(results) {
+    // checkAlertInfo returns the function to call to unblock the alert.
+    // It comes to us as the first element of the results array.
+    results[0]();
+  });
+}
+
+
 // Set some prefs:
 //
 //  * browser.pagethumbnails.capturing_disabled: true

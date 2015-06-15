@@ -9,7 +9,7 @@
 <script>
   window.onload = function() {
     navigator.mozSetMessageHandler('request-sync', function(message) {
-      alert('step' + message.step);
+      alert(message.msg);
     });
   };
 </script>

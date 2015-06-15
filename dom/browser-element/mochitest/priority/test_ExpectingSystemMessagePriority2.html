@@ -1,7 +1,8 @@
 <!DOCTYPE HTML>
 <html>
 <!--
-Test that frames with pending system message gets elevated process priority.
+Test that a regular (not mozapptype=critical) frame that's expecting a system
+message gets priority BACKGROUND_PERCEIVABLE when it's in the background.
 -->
 <head>
   <script type="application/javascript" src="/tests/SimpleTest/SimpleTest.js"></script>
@@ -52,31 +53,41 @@ addEventListener('testready', function() {
     }
   }
 
+  // ProcessPriorityManager requires at least one process in foreground
+  // so that other processes can transit freely between foreground and
+  // background.
+  function setupTest() {
+    var foreground = document.createElement('iframe');
+    foreground.setAttribute('mozbrowser', true);
+    foreground.src = browserElementTestHelpers.emptyPage;
+    expectMozbrowserEvent(foreground, 'loadend').then(runTest);
+    document.body.appendChild(foreground);
+  }
+
   function testApp() {
 
     var iframe = document.createElement('iframe');
     iframe.setAttribute('mozbrowser', true);
     iframe.setAttribute('mozapp', gApp.manifestURL);
-    iframe.setAttribute('mozapptype', 'critical');
     iframe.setAttribute('src', gApp.manifest.launch_path);
     //iframe.setAttribute('src', browserElementTestHelpers.emptyPage);
 
     var childID = null;
 
-    expectProcessCreated('FOREGROUND_HIGH').then(function(chid) {
+    expectProcessCreated('FOREGROUND').then(function(chid) {
       childID = chid;
       info('process created with childID ' + childID);
     }).then(function() {
       info('waiting page loaded...');
       return expectMozbrowserEvent(iframe, 'loadend');
     }).then(function() {
-      info('system message handled.');
-      return expectMozbrowserEvent(iframe, 'showmodalprompt').then(function(e) {
-        is(e.detail.message, testingMessage, 'alert message: ' + e.detail.message);
-      });
+      info('switch this frame to background, and expected priority change.');
+      var p = expectPriorityChange(childID, 'BACKGROUND_PERCEIVABLE');
+      iframe.setVisible(false);
+      return p;
     }).then(function() {
-      info('process priority changed.');
-      return expectPriorityChange(childID, 'FOREGROUND');
+      info('message time out, expect process priority changed.');
+      return expectPriorityChange(childID, 'BACKGROUND');
     }).then(SimpleTest.finish);
 
     document.body.appendChild(iframe);
@@ -92,7 +103,8 @@ addEventListener('testready', function() {
 
     // Preferences.
     function() {
-      SpecialPowers.pushPrefEnv({"set": [["dom.sysmsg.enabled", true],
+      SpecialPowers.pushPrefEnv({"set": [["dom.ipc.systemMessageCPULockTimeoutSec", 5],
+                                         ["dom.sysmsg.enabled", true],
                                          ["dom.testing.ignore_ipc_principal", true]]}, runTest);
     },
 
@@ -121,6 +133,9 @@ addEventListener('testready', function() {
 
     // Installing the app.
     installApp,
+
+    // Insert one mozbrowser frame as the foreground frame
+    setupTest,
 
     // Run tests in app.
     testApp,
